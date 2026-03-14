@@ -1,11 +1,16 @@
+from flask import Flask, request
+from twilio.twiml.messaging_response import MessagingResponse
 from groq import Groq
 from dotenv import load_dotenv
 import os
 
+# --- Load environment variables ---
 load_dotenv()
 API_KEY = os.getenv("GROQ_API_KEY")
 client = Groq(api_key=API_KEY)
 
+# --- Flask app ---
+app = Flask(__name__)
 
 # --- System Prompt ---
 SYSTEM_PROMPT = """
@@ -30,78 +35,66 @@ VERY IMPORTANT — Always ask before assuming:
 - If someone mentions a serious concern like cancer, heart problems, or any scary diagnosis,
   do NOT jump to emotional support or advice immediately.
 - Instead, FIRST ask a gentle clarifying question to understand WHY they feel that way.
-- This shows you actually care and are listening, not just giving a generic response.
-
-Examples of how to handle serious concerns:
-
-User: "I think I have cancer"
-Wrong response: "I'm so sorry to hear that, cancer is scary..."
-Correct response: "Hey, that must be really scary to feel that way 😟
-  Before anything — what's been making you think that yaar?
-  Are you feeling some specific symptoms or did something happen
-  that's worrying you? Tell me more, I'm listening 💛"
-
-User: "I think something is wrong with my heart"
-Wrong response: "Heart problems can be serious, you should see a doctor..."
-Correct response: "Oh no yaar, that sounds really worrying 😟
-  What kind of feelings are you getting? Like chest pain, racing
-  heartbeat, or something else? Help me understand what's going
-  on so I can actually help you properly 💛"
-
-User: "I've been feeling really sick"
-Wrong response: "I'm sorry you're not feeling well, here are some tips..."
-Correct response: "Aww that sucks yaar 😔 Tell me more —
-  what kind of sick are we talking? Like fever, stomach issues,
-  body ache? How long has it been going on?"
-
-General rule:
-- Vague or serious concern → ask a gentle follow-up question FIRST
-- Only give advice or emotional support AFTER you understand the situation
-- Always make the user feel heard, never rushed
 
 You must NEVER:
 - Diagnose medical conditions
 - Recommend specific medications or dosages
 - Replace professional medical advice
 
-For serious symptoms always say something like:
+For serious symptoms always say:
 "Hey, I really care about you and this one sounds like something
 a doctor should check out — please don't ignore it, okay? 🙏"
 """
 
-# --- Chat history ---
-chat_history = [{"role": "system", "content": SYSTEM_PROMPT}]
+# --- Store chat history per user ---
+chat_histories = {}
 
-# --- Chat function ---
-def chat(user_message):
-    chat_history.append({"role": "user", "content": user_message})
+def get_response(user_number, user_message):
+    # Create history for new users
+    if user_number not in chat_histories:
+        chat_histories[user_number] = [
+            {"role": "system", "content": SYSTEM_PROMPT}
+        ]
 
+    # Add user message
+    chat_histories[user_number].append({
+        "role": "user",
+        "content": user_message
+    })
+
+    # Send to Groq
     response = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
-        messages=chat_history,
+        messages=chat_histories[user_number],
         max_tokens=1024,
         temperature=0.9
     )
 
     reply = response.choices[0].message.content
-    chat_history.append({"role": "assistant", "content": reply})
+
+    # Save reply to history
+    chat_histories[user_number].append({
+        "role": "assistant",
+        "content": reply
+    })
+
     return reply
 
-# --- Main loop ---
-print("=" * 40)
-print("   🩺 Bhaii❤️ - Your Health Buddy")
-print("=" * 40)
-print("Type 'quit' to exit.\n")
+# --- WhatsApp webhook ---
+@app.route("/whatsapp", methods=["POST"])
+def whatsapp():
+    # Get incoming message and sender number
+    incoming_msg = request.form.get("Body", "").strip()
+    sender = request.form.get("From", "")
 
-while True:
-    user_input = input("You: ").strip()
+    # Get Bhaii's response
+    reply = get_response(sender, incoming_msg)
 
-    if not user_input:
-        continue
-    if user_input.lower() == "quit":
-        print("\nBhaii❤️: Aww take care yaar! Remember I'm always here 💛 Goodbye! 👋")
-        break
+    # Send reply back via Twilio
+    resp = MessagingResponse()
+    resp.message(reply)
+    return str(resp)
 
-    response = chat(user_input)
-    print(f"\nBhaii❤️: {response}\n")
-    print("-" * 40)
+# --- Run the app ---
+if __name__ == "__main__":
+    app.run(debug=True, port=5000)
